@@ -284,7 +284,7 @@ struct SDL_Block {
 		// position when leaving fullscreen for the first time.
 		// See FinalizeWindowState function for details.
 		bool lazy_init_window_size = false;
-		bool vsync = false;
+		bool vsync = true;
 		bool want_resizable_window = false;
 		SCREEN_TYPES type;
 		SCREEN_TYPES want_type;
