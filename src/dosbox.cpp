@@ -50,6 +50,12 @@
 #include "midi.h"
 #include "hardware.h"
 
+#if defined(WIN32)
+#include <Windows.h>
+#include <synchapi.h>
+static HANDLE timer = CreateWaitableTimer(nullptr, TRUE, nullptr);
+#endif
+
 #if C_NE2000
 //#include "ne2000.h"
 void NE2K_Init(Section* sec);
@@ -174,6 +180,41 @@ static Bitu Normal_Loop()
 	}
 }
 
+static void precisedelay(double seconds)
+{
+    static double estimate = 5e-4;
+    static double mean = 5e-4;
+    static double m2 = 0;
+    static int64_t count = 1;
+
+    while (seconds > estimate) {
+        auto start = std::chrono::steady_clock::now();
+#if defined(WIN32)
+		LARGE_INTEGER ft{};
+		ft.QuadPart = -(10 * 100);
+		SetWaitableTimer(timer, &ft, 0, nullptr, nullptr, 0);
+		WaitForSingleObject(timer, INFINITE);
+#else		
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+#endif		
+        auto end = std::chrono::steady_clock::now();
+
+        double observed = (end - start).count() / 1e9;
+        seconds -= observed;
+
+        ++count;
+        double delta = observed - mean;
+        mean += delta / count;
+        m2   += delta * (observed - mean);
+        double stddev = sqrt(m2 / (count - 1));
+        estimate = mean + stddev;
+    }
+
+    // spin lock
+    auto start = std::chrono::steady_clock::now();
+    while ((std::chrono::steady_clock::now() - start).count() / 1e9 < seconds);
+}
+
 void increaseticks() { //Make it return ticksRemain and set it in the function above to remove the global variable.
 	if (GCC_UNLIKELY(ticksLocked)) { // For Fast Forward Mode
 		ticksRemain=5;
@@ -185,31 +226,19 @@ void increaseticks() { //Make it return ticksRemain and set it in the function a
 		return;
 	}
 
-	static Bit32s lastsleepDone = -1;
-	static Bitu sleep1count = 0;
+	ticksScheduled += ticksAdded;
 
 	const auto ticksNew = GetTicks();
-	ticksScheduled += ticksAdded;
 	if (ticksNew <= ticksLast) { //lower should not be possible, only equal.
 		ticksAdded = 0;
 
-		if (!CPU_CycleAutoAdjust || CPU_SkipCycleAutoAdjust || sleep1count < 3) {
-			Delay(1);
-		} else {
-			/* Certain configurations always give an exact sleepingtime of 1, this causes problems due to the fact that
-			   dosbox keeps track of full blocks.
-			   This code introduces some randomness to the time slept, which improves stability on those configurations
-			 */
-			static const Bit32u sleeppattern[] = { 2, 2, 3, 2, 2, 4, 2};
-			static Bit32u sleepindex = 0;
-			if (ticksDone != lastsleepDone) sleepindex = 0;
-			Delay(sleeppattern[sleepindex++]);
-			sleepindex %= sizeof(sleeppattern) / sizeof(sleeppattern[0]);
-		}
+		//const auto start = GetTicksUs();
+		precisedelay(0.001);
+		//Delay(1);
+		//const auto stop = GetTicksUs();
+
+		//LOG_MSG("sleep took %d us", GetTicksDiff(stop, start));
 		auto timeslept = GetTicksSince(ticksNew);
-		// Count how many times in the current block (of 250 ms) the time slept was 1 ms
-		if (CPU_CycleAutoAdjust && !CPU_SkipCycleAutoAdjust && timeslept == 1) sleep1count++;
-		lastsleepDone = ticksDone;
 
 		// Update ticksDone with the time spent sleeping
 		ticksDone -= timeslept;
@@ -310,8 +339,6 @@ void increaseticks() { //Make it return ticksRemain and set it in the function a
 		CPU_IODelayRemoved = 0;
 		ticksDone = 0;
 		ticksScheduled = 0;
-		lastsleepDone = -1;
-		sleep1count = 0;
 	} else if (ticksAdded > 15) {
 		/* ticksAdded > 15 but ticksScheduled < 5, lower the cycles
 		   but do not reset the scheduled/done ticks to take them into

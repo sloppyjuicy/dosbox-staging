@@ -23,6 +23,7 @@
 #include <thread>
 #include <cassert>
 #include <climits>
+#include <cmath>
 
 /* underlying clock rate in HZ */
 
@@ -44,6 +45,13 @@ static inline int64_t GetTicks(void)
 	        .count();
 }
 
+static inline int64_t GetTicksUs(void)
+{
+	return std::chrono::duration_cast<std::chrono::microseconds>(
+	               std::chrono::steady_clock::now().time_since_epoch())
+	        .count();
+}
+
 static inline int GetTicksDiff(int64_t new_ticks, int64_t old_ticks)
 {
 	assert(new_ticks >= old_ticks);
@@ -61,5 +69,4 @@ static inline void Delay(int milliseconds)
 {
 	std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
 }
-
 #endif
