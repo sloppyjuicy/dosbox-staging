@@ -24,6 +24,7 @@
 
 #if C_MT32EMU
 
+#include <algorithm>
 #include <cassert>
 #include <deque>
 #include <functional>
@@ -36,6 +37,7 @@
 #include "control.h"
 #include "cross.h"
 #include "fs_utils.h"
+#include "mapper.h"
 #include "midi.h"
 #include "midi_lasynth_model.h"
 #include "mixer.h"
@@ -635,6 +637,35 @@ void MidiHandler_mt32::Close()
 	is_open = false;
 }
 
+void MidiHandler_mt32::ApplyReverb(const MT32_REVERB_SETTING setting,
+                                   const MT32_REVERB_ADJUSTMENT adjustment)
+{
+	static uint8_t reverb_sysex[] = {0x10, 0, 0x01, 0, 0, 0};
+
+	const auto i = static_cast<size_t>(setting);
+
+	// Turn it up
+	if (adjustment == MT32_REVERB_ADJUSTMENT::UP) {
+		constexpr int max_value[] = {0, 0, 0, 3, 7, 7};
+		const auto new_value = std::min(reverb_sysex[i] + 1, max_value[i]);
+		reverb_sysex[i] = static_cast<uint8_t>(new_value);
+
+	}
+	// Turn it down
+	else if (reverb_sysex[i]) {
+		reverb_sysex[i]--;
+	}
+
+	// Apply the setting
+	constexpr uint8_t control_channel = 16;
+	service->writeSysex(control_channel, reverb_sysex, sizeof(reverb_sysex));
+	service->setReverbOverridden(true);
+	service->setReverbEnabled(true);
+
+	LOG_MSG("MT32: Reverb set to mode %u, decay is %u, and level %u",
+	        reverb_sysex[3], reverb_sysex[4], reverb_sysex[5]);
+}
+
 uint32_t MidiHandler_mt32::GetMidiEventTimestamp() const
 {
 	const uint32_t played_frames = total_buffers_played * FRAMES_PER_BUFFER;
@@ -716,8 +747,69 @@ void MidiHandler_mt32::Render()
 	}
 }
 
+static void mt32_ReverbModeUp(bool was_pressed)
+{
+	if (was_pressed)
+		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::MODE,
+		                          MT32_REVERB_ADJUSTMENT::UP);
+}
+
+static void mt32_ReverbModeDown(bool was_pressed)
+{
+	if (was_pressed)
+		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::MODE,
+		                          MT32_REVERB_ADJUSTMENT::DOWN);
+}
+
+static void mt32_ReverbDecayUp(bool was_pressed)
+{
+	if (was_pressed)
+		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::DECAY,
+		                          MT32_REVERB_ADJUSTMENT::UP);
+}
+
+static void mt32_ReverbDecayDown(bool was_pressed)
+{
+	if (was_pressed)
+		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::DECAY,
+		                          MT32_REVERB_ADJUSTMENT::DOWN);
+}
+
+static void mt32_ReverbLevelUp(bool was_pressed)
+{
+	if (was_pressed)
+		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::LEVEL,
+		                          MT32_REVERB_ADJUSTMENT::UP);
+}
+
+static void mt32_ReverbLevelDown(bool was_pressed)
+{
+	if (was_pressed)
+		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::LEVEL,
+		                          MT32_REVERB_ADJUSTMENT::DOWN);
+}
+
 static void mt32_init(MAYBE_UNUSED Section *sec)
-{}
+{
+	// Reverb control hotkeys
+	MAPPER_AddHandler(mt32_ReverbModeUp, SDL_SCANCODE_M, PRIMARY_MOD,
+	                  "rvb-mode+", "Rvb Mode+");
+
+	MAPPER_AddHandler(mt32_ReverbModeDown, SDL_SCANCODE_M,
+	                  PRIMARY_MOD | MMOD2, "rvb-mode-", "Rvb Mode-");
+
+	MAPPER_AddHandler(mt32_ReverbDecayUp, SDL_SCANCODE_D, PRIMARY_MOD,
+	                  "rvb-decay+", "Rvb Decay+");
+
+	MAPPER_AddHandler(mt32_ReverbDecayDown, SDL_SCANCODE_D,
+	                  PRIMARY_MOD | MMOD2, "rvb-decay-", "Rvb Decay-");
+
+	MAPPER_AddHandler(mt32_ReverbLevelUp, SDL_SCANCODE_L, PRIMARY_MOD,
+	                  "rvb-level+", "Rvb Level+");
+
+	MAPPER_AddHandler(mt32_ReverbLevelDown, SDL_SCANCODE_L,
+	                  PRIMARY_MOD | MMOD2, "rvb-level-", "Rvb Level-");
+}
 
 void MT32_AddConfigSection(Config *conf)
 {
