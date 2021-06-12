@@ -43,10 +43,6 @@ static_assert(MT32EMU_VERSION_MAJOR > 2 ||
                       (MT32EMU_VERSION_MAJOR == 2 && MT32EMU_VERSION_MINOR >= 5),
               "libmt32emu >= 2.5.0 required (using " MT32EMU_VERSION ")");
 
-// Reverb knobs
-enum class MT32_REVERB_SETTING : int { MODE = 3, DECAY = 4, LEVEL = 5 };
-enum class MT32_REVERB_ADJUSTMENT { UP, DOWN };
-
 class MidiHandler_mt32 final : public MidiHandler {
 private:
 	using channel_t = std::unique_ptr<MixerChannel, decltype(&MIXER_DelChannel)>;
@@ -57,8 +53,6 @@ public:
 	MidiHandler_mt32();
 	~MidiHandler_mt32() override;
 	void Close() override;
-	void ApplyReverb(MT32_REVERB_SETTING setting,
-	                 MT32_REVERB_ADJUSTMENT adjustment);
 	const char *GetName() const override { return "mt32"; }
 	MIDI_RC ListAll(Program *caller) override;
 	bool Open(const char *conf) override;

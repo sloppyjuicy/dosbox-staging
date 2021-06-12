@@ -49,7 +49,7 @@
 // ----------------
 
 // Buffer sizes
-static constexpr int FRAMES_PER_BUFFER = 1024; // synth granularity
+static constexpr int FRAMES_PER_BUFFER = 512; // synth granularity
 
 // Analogue circuit modes: DIGITAL_ONLY, COARSE, ACCURATE, OVERSAMPLED
 constexpr auto ANALOG_MODE = MT32Emu::AnalogOutputMode_ACCURATE;
@@ -57,16 +57,19 @@ constexpr auto ANALOG_MODE = MT32Emu::AnalogOutputMode_ACCURATE;
 // DAC Emulation modes: NICE, PURE, GENERATION1, and GENERATION2
 constexpr auto DAC_MODE = MT32Emu::DACInputMode_NICE;
 
-// Analog rendering types: BITS16S, FLOAT
+// Analog rendering types: BIT16S, FLOAT
 constexpr auto RENDERING_TYPE = MT32Emu::RendererType_FLOAT;
 
 // Sample rate conversion quality: FASTEST, FAST, GOOD, BEST
 constexpr auto RATE_CONVERSION_QUALITY = MT32Emu::SamplerateConversionQuality_BEST;
 
-// Use improved behavior for volume adjustments, panning, and mixing
+// Maximum number of simultaneous partials
+constexpr auto MAX_PARTIALS = 128; // 32 to 256
+
+// Use default behavior for volume adjustments, panning, and mixing
 constexpr bool USE_NICE_RAMP = true;
-constexpr bool USE_NICE_PANNING = true;
-constexpr bool USE_NICE_PARTIAL_MIXING = true;
+constexpr bool USE_NICE_PANNING = false;
+constexpr bool USE_NICE_PARTIAL_MIXING = false;
 
 using Rom = LASynthModel::Rom;
 constexpr auto versioned = LASynthModel::ROM_TYPE::VERSIONED;
@@ -537,22 +540,21 @@ bool MidiHandler_mt32::Open(MAYBE_UNUSED const char *conf)
 
 	const auto sample_rate = mixer_channel->GetSampleRate();
 
+	mt32_service->setPartialCount(MAX_PARTIALS);
 	mt32_service->setAnalogOutputMode(ANALOG_MODE);
 	mt32_service->selectRendererType(RENDERING_TYPE);
 	mt32_service->setStereoOutputSampleRate(sample_rate);
 	mt32_service->setSamplerateConversionQuality(RATE_CONVERSION_QUALITY);
+	mt32_service->setDACInputMode(DAC_MODE);
+	mt32_service->setNiceAmpRampEnabled(USE_NICE_RAMP);
+	mt32_service->setNicePanningEnabled(USE_NICE_PANNING);
+	mt32_service->setNicePartialMixingEnabled(USE_NICE_PARTIAL_MIXING);
 
 	const auto rc = mt32_service->openSynth();
 	if (rc != MT32EMU_RC_OK) {
 		LOG_MSG("MT32: Error initialising emulation: %i", rc);
 		return false;
 	}
-
-	mt32_service->setDACInputMode(DAC_MODE);
-	mt32_service->setNiceAmpRampEnabled(USE_NICE_RAMP);
-	mt32_service->setNicePanningEnabled(USE_NICE_PANNING);
-	mt32_service->setNicePartialMixingEnabled(USE_NICE_PARTIAL_MIXING); 
-
 	service = std::move(mt32_service);
 	channel = std::move(mixer_channel);
 
@@ -637,35 +639,6 @@ void MidiHandler_mt32::Close()
 	is_open = false;
 }
 
-void MidiHandler_mt32::ApplyReverb(const MT32_REVERB_SETTING setting,
-                                   const MT32_REVERB_ADJUSTMENT adjustment)
-{
-	static uint8_t reverb_sysex[] = {0x10, 0, 0x01, 0, 0, 0};
-
-	const auto i = static_cast<size_t>(setting);
-
-	// Turn it up
-	if (adjustment == MT32_REVERB_ADJUSTMENT::UP) {
-		constexpr int max_value[] = {0, 0, 0, 3, 7, 7};
-		const auto new_value = std::min(reverb_sysex[i] + 1, max_value[i]);
-		reverb_sysex[i] = static_cast<uint8_t>(new_value);
-
-	}
-	// Turn it down
-	else if (reverb_sysex[i]) {
-		reverb_sysex[i]--;
-	}
-
-	// Apply the setting
-	constexpr uint8_t control_channel = 16;
-	service->writeSysex(control_channel, reverb_sysex, sizeof(reverb_sysex));
-	service->setReverbOverridden(true);
-	service->setReverbEnabled(true);
-
-	LOG_MSG("MT32: Reverb set to mode %u, decay is %u, and level %u",
-	        reverb_sysex[3], reverb_sysex[4], reverb_sysex[5]);
-}
-
 uint32_t MidiHandler_mt32::GetMidiEventTimestamp() const
 {
 	const uint32_t played_frames = total_buffers_played * FRAMES_PER_BUFFER;
@@ -747,68 +720,8 @@ void MidiHandler_mt32::Render()
 	}
 }
 
-static void mt32_ReverbModeUp(bool was_pressed)
-{
-	if (was_pressed)
-		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::MODE,
-		                          MT32_REVERB_ADJUSTMENT::UP);
-}
-
-static void mt32_ReverbModeDown(bool was_pressed)
-{
-	if (was_pressed)
-		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::MODE,
-		                          MT32_REVERB_ADJUSTMENT::DOWN);
-}
-
-static void mt32_ReverbDecayUp(bool was_pressed)
-{
-	if (was_pressed)
-		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::DECAY,
-		                          MT32_REVERB_ADJUSTMENT::UP);
-}
-
-static void mt32_ReverbDecayDown(bool was_pressed)
-{
-	if (was_pressed)
-		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::DECAY,
-		                          MT32_REVERB_ADJUSTMENT::DOWN);
-}
-
-static void mt32_ReverbLevelUp(bool was_pressed)
-{
-	if (was_pressed)
-		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::LEVEL,
-		                          MT32_REVERB_ADJUSTMENT::UP);
-}
-
-static void mt32_ReverbLevelDown(bool was_pressed)
-{
-	if (was_pressed)
-		mt32_instance.ApplyReverb(MT32_REVERB_SETTING::LEVEL,
-		                          MT32_REVERB_ADJUSTMENT::DOWN);
-}
-
 static void mt32_init(MAYBE_UNUSED Section *sec)
 {
-	// Reverb control hotkeys
-	MAPPER_AddHandler(mt32_ReverbModeUp, SDL_SCANCODE_M, PRIMARY_MOD,
-	                  "rvb-mode+", "Rvb Mode+");
-
-	MAPPER_AddHandler(mt32_ReverbModeDown, SDL_SCANCODE_M,
-	                  PRIMARY_MOD | MMOD2, "rvb-mode-", "Rvb Mode-");
-
-	MAPPER_AddHandler(mt32_ReverbDecayUp, SDL_SCANCODE_D, PRIMARY_MOD,
-	                  "rvb-decay+", "Rvb Decay+");
-
-	MAPPER_AddHandler(mt32_ReverbDecayDown, SDL_SCANCODE_D,
-	                  PRIMARY_MOD | MMOD2, "rvb-decay-", "Rvb Decay-");
-
-	MAPPER_AddHandler(mt32_ReverbLevelUp, SDL_SCANCODE_L, PRIMARY_MOD,
-	                  "rvb-level+", "Rvb Level+");
-
-	MAPPER_AddHandler(mt32_ReverbLevelDown, SDL_SCANCODE_L,
-	                  PRIMARY_MOD | MMOD2, "rvb-level-", "Rvb Level-");
 }
 
 void MT32_AddConfigSection(Config *conf)
